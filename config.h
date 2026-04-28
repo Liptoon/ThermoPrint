@@ -8,9 +8,11 @@ struct Config {
     int         label_size_mm = 30;         // Fischero only
     bool        portrait  = false;          // Fischero orientation
     std::string alignment = "left";         // "left"/"center"/"right"
-    int         margin_x  = 2;
-    int         margin_y  = 2;
-    std::string last_mac;                   // helper, not used for auto-connect
+    int         margin_left   = 2;
+    int         margin_right  = 2;
+    int         margin_top    = 2;
+    int         margin_bottom = 2;
+    std::string last_mac;                   // helper
 };
 
 Config load_config();

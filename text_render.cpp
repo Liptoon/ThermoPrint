@@ -9,11 +9,8 @@
 #include <string>
 #include <algorithm>
 
-// ------------------------------------------------------------
-// Font size mapping
-// ------------------------------------------------------------
-static const int FISCHERO_IDX[6] = {0, 0, 1, 2, 3, 4};  // [0] unused
-static const int CAT_IDX[6]      = {0, 1, 2, 3, 5, 6};  // [0] unused
+static const int FISCHERO_IDX[6] = {0, 0, 1, 2, 3, 4};
+static const int CAT_IDX[6]      = {0, 1, 2, 3, 5, 6};
 
 int font_size_index(int font_size, int print_width) {
     if (font_size < 1) font_size = 1;
@@ -34,9 +31,6 @@ int font_glyph_h(int font_size, int print_width) {
 int font_glyph_w(int font_size)  { return font_glyph_w(font_size, 384); }
 int font_glyph_h(int font_size)  { return font_glyph_h(font_size, 384); }
 
-// ------------------------------------------------------------
-// Glyph lookup
-// ------------------------------------------------------------
 static const uint8_t *get_glyph(uint32_t codepoint, int size_idx) {
     const uint8_t *base  = FONT_GLYPH_TABLE[size_idx];
     int gbytes           = FONT_GLYPH_BYTES[size_idx];
@@ -48,9 +42,6 @@ static const uint8_t *get_glyph(uint32_t codepoint, int size_idx) {
     return base + (int)(codepoint - FONT_CP_MIN) * gbytes;
 }
 
-// ------------------------------------------------------------
-// Render one glyph
-// ------------------------------------------------------------
 static void render_glyph(BinImage &img, uint32_t cp, int x, int y, int size_idx) {
     const FontSizeMetrics &m = FONT_METRICS[size_idx];
     int cell_w    = m.cell_w;
@@ -70,9 +61,6 @@ static void render_glyph(BinImage &img, uint32_t cp, int x, int y, int size_idx)
     }
 }
 
-// ------------------------------------------------------------
-// UTF-8 decoder
-// ------------------------------------------------------------
 static uint32_t utf8_next(const char **p) {
     unsigned char c = (unsigned char)**p;
     (*p)++;
@@ -100,9 +88,6 @@ static std::vector<uint32_t> decode_utf8(const std::string &s) {
     return cps;
 }
 
-// ------------------------------------------------------------
-// Word wrapper
-// ------------------------------------------------------------
 static std::vector<std::vector<uint32_t>> word_wrap(
         const std::vector<uint32_t> &cps,
         int max_chars,
@@ -171,23 +156,22 @@ static std::vector<std::vector<uint32_t>> word_wrap(
     return result;
 }
 
-// ------------------------------------------------------------
-// render_text
-// ------------------------------------------------------------
 BinImage render_text(const std::string &text,
                      int print_width,
                      const TextOptions &opts) {
-    int pw       = (print_width + 7) & ~7;
+    int pw = (print_width + 7) & ~7;
     int size_idx = font_size_index(opts.font_size, pw);
 
     const FontSizeMetrics &m = FONT_METRICS[size_idx];
-    int gw       = m.cell_w;
-    int gh       = m.cell_h;
+    int gw = m.cell_w;
+    int gh = m.cell_h;
 
-    // effective left/right margin from opts, clamped
-    int margin_x = std::max(0, opts.margin_x);
-    int margin_y = std::max(0, opts.margin_y);
-    int avail_w  = pw - 2 * margin_x;
+    int left   = std::max(0, opts.margin_left);
+    int right  = std::max(0, opts.margin_right);
+    int top    = std::max(0, opts.margin_top);
+    int bottom = std::max(0, opts.margin_bottom);
+
+    int avail_w = pw - left - right;
     if (avail_w < gw) avail_w = gw;
     int max_chars = avail_w / gw;
     if (max_chars < 1) max_chars = 1;
@@ -197,10 +181,8 @@ BinImage render_text(const std::string &text,
 
     int line_h  = gh + opts.line_spacing;
     int n_lines = (int)lines.size();
-    int total_h = margin_y
-                + n_lines * line_h
-                - (n_lines > 0 ? opts.line_spacing : 0)
-                + margin_y;
+    int text_h  = n_lines * line_h - (n_lines > 0 ? opts.line_spacing : 0);
+    int total_h = top + text_h + bottom;
     if (total_h < 1) total_h = 1;
 
     BinImage img;
@@ -208,27 +190,27 @@ BinImage render_text(const std::string &text,
     img.height = total_h;
     img.rows.assign(total_h, std::vector<bool>(pw, false));
 
-    int y = margin_y;
+    int y = top;
     for (const auto &line : lines) {
-        int line_px = (int)line.size() * gw;   // actual width of this line
+        int line_px = (int)line.size() * gw;
         int x;
         switch (opts.alignment) {
             case TextAlign::Left:
-                x = margin_x;
+                x = left;
                 break;
             case TextAlign::Center:
-                x = margin_x + (avail_w - line_px) / 2;
-                if (x < margin_x) x = margin_x;
+                x = left + (avail_w - line_px) / 2;
+                if (x < left) x = left;
                 break;
             case TextAlign::Right:
-                x = pw - margin_x - line_px;
-                if (x < margin_x) x = margin_x;
+                x = pw - right - line_px;
+                if (x < left) x = left;
                 break;
             default:
-                x = margin_x;
+                x = left;
         }
         for (uint32_t cp : line) {
-            if (x + gw > pw - margin_x) break;
+            if (x + gw > pw - right) break;
             render_glyph(img, cp, x, y, size_idx);
             x += gw;
         }
@@ -237,9 +219,6 @@ BinImage render_text(const std::string &text,
     return img;
 }
 
-// ------------------------------------------------------------
-// load_text_file
-// ------------------------------------------------------------
 std::string load_text_file(const std::string &path) {
     std::ifstream f(path, std::ios::in | std::ios::binary);
     if (!f)

@@ -57,7 +57,6 @@ public:
     // content along the feed axis. 0 = no padding (use img height as-is).
     void set_label_length_mm(int mm) { label_len_mm_ = mm; }
     int  label_length_mm() const     { return label_len_mm_; }
-
     // ---- Feed / Print ----
     void feed(int dots) override;
     bool can_form_feed() const override { return true; }
@@ -66,7 +65,6 @@ public:
 
     const char *printer_name() const override { return "Fischero D11s (AiYin)"; }
     int print_width() const override { return 96; }
-
 private:
     Transport transport_mode_;
     bool      using_spp_ = false;

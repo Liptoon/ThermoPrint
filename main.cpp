@@ -10,7 +10,7 @@
 #include "printer.h"
 #include "fischero_printer.h"
 #include "cat_printer.h"
-#include "tui.h"                    // <-- TUI entry point
+#include "tui.h"
 
 bool g_verbose = false;
 
@@ -31,8 +31,6 @@ static void print_usage(const char *prog)
         "  --fischero              Fischero D11s label printer\n"
         "  --cat                   Cat roll printer (any supported model)\n"
         "  --device NAME|MAC       Specific device name or MAC address\n"
-        "                          Fischero: scans for FICHERO* if omitted\n"
-        "                          Cat:      scans for known model names if omitted\n"
         "  --scan-timeout N        Scan timeout in seconds (default: 15)\n"
         "\n"
         "ACTIONS  (can combine; executed in listed order)\n"
@@ -46,10 +44,11 @@ static void print_usage(const char *prog)
         "\n"
         "TEXT  Font: Fake_Receipt.otf, Latin/Polish U+0020-U+017E\n"
         "  --font-size 1-5         Glyph size.\n"
-        "    Fischero (rendered to 96px head, then rotated for landscape):\n"
-        "      1: 5x10px   2: 8x14px*   3: 11x19px   4: 14x24px   5: 19x34px\n"
-        "    Cat roll (384px): 1=8x14 46ch  2=11x19 33ch  3=14x24 26ch*  4=19x34  5=22x38\n"
-        "  --margin N              Pixel margin all sides (default: 2)\n"
+        "  --margin N              Set all four margins to N dots (default: 2)\n"
+        "  --margin-left N         Left margin (dots)\n"
+        "  --margin-right N        Right margin (dots)\n"
+        "  --margin-top N          Top margin (dots)\n"
+        "  --margin-bottom N       Bottom margin (dots)\n"
         "  --line-spacing N        Extra blank rows between lines (default: 1)\n"
         "  --no-word-wrap          Truncate long lines instead of wrapping\n"
         "\n"
@@ -57,10 +56,8 @@ static void print_usage(const char *prog)
         "  --dither ALGO           floyd-steinberg* atkinson mean-threshold halftone none\n"
         "  --copies N              Number of copies (default: 1)\n"
         "  --density 0-2           0=light 1=medium* 2=dark\n"
-        "  --portrait              Fischero: disable rotation (text reads along feed direction)\n"
-        "                          Default: landscape (text reads across the long label edge)\n"
+        "  --portrait              Print across the short edge (14mm) instead of along the label\n"
         "  --label-size 30|50      Fischero label long edge in mm (default: 30)\n"
-        "                          Short edge is always 14 mm. Print is centred on the label.\n"
         "\n"
         "FISCHERO ONLY\n"
         "  --spp / --ble           Force transport (default auto: SPP preferred)\n"
@@ -77,27 +74,19 @@ static void print_usage(const char *prog)
         "EXAMPLES\n"
         "  %s --fischero --text 'FRAGILE' --font-size 3 --copies 3\n"
         "  %s --fischero --text 'Price: 9.99' --font-size 2 --density 2\n"
-        "  %s --fischero --label-size 50 --text 'Long label content here'\n"
-        "  %s --fischero --label-size 50 --portrait --print logo.png\n"
-        "  %s --fischero --print label.png --dither atkinson\n"
-        "  %s --fischero --status\n"
-        "  %s --fischero --device C8:48:8A:42:0F:AC --text 'hello'\n"
+        "  %s --fischero --label-size 50 --text 'Long label'\n"
+        "  %s --fischero --print logo.png --dither atkinson\n"
         "  %s --cat --text-file receipt.txt --font-size 2\n"
         "  %s --cat --print photo.png\n"
         "\n",
-        prog,
-        prog, prog, prog, prog, prog, prog, prog, prog, prog);
+        prog, prog, prog, prog, prog, prog, prog);
 }
 
-
-// ------------------------------------------------------------
-// Argument struct
-// ------------------------------------------------------------
 struct Args {
     bool use_fischero = false;
     bool use_cat      = false;
-    bool force_spp    = false;   // --spp: force Classic BT for Fischero
-    bool force_ble    = false;   // --ble: force BLE for Fischero
+    bool force_spp    = false;
+    bool force_ble    = false;
 
     std::string device_name;
     int scan_timeout = 15;
@@ -114,24 +103,24 @@ struct Args {
     Dither dither   = Dither::FloydSteinberg;
     int    density  = 1;
 
-    int  font_size    = -1;  // -1 = use per-device default
-    int  margin       = 2;
-    int  line_spacing = 1;
-    bool word_wrap    = true;
+    int  font_size     = -1;
+    int  margin_left   = 2;
+    int  margin_right  = 2;
+    int  margin_top    = 2;
+    int  margin_bottom = 2;
+    int  line_spacing  = 1;
+    bool word_wrap     = true;
 
     int  paper_type    = -1;
     int  shutdown_time = -1;
     int  set_speed     = -1;
     bool factory_reset = false;
-    bool portrait      = false;  // Fischero: default landscape, --portrait for portrait
-    int  label_size_mm = 30;     // Fischero: 30 (default) or 50 mm long edge
+    bool portrait      = false;
+    int  label_size_mm = 30;
 
-    int energy = -1;  // -1 = use density mapping
+    int energy = -1;
 };
 
-// ------------------------------------------------------------
-// Parse arguments
-// ------------------------------------------------------------
 static bool parse_args(int argc, char **argv, Args &args)
 {
     for (int i = 1; i < argc; i++) {
@@ -182,7 +171,20 @@ static bool parse_args(int argc, char **argv, Args &args)
             args.font_size = fs;
         } else if (strcmp(a, "--margin") == 0) {
             const char *v = next("--margin"); if (!v) return false;
-            args.margin = atoi(v);
+            int m = atoi(v);
+            args.margin_left = args.margin_right = args.margin_top = args.margin_bottom = m;
+        } else if (strcmp(a, "--margin-left") == 0) {
+            const char *v = next("--margin-left"); if (!v) return false;
+            args.margin_left = atoi(v);
+        } else if (strcmp(a, "--margin-right") == 0) {
+            const char *v = next("--margin-right"); if (!v) return false;
+            args.margin_right = atoi(v);
+        } else if (strcmp(a, "--margin-top") == 0) {
+            const char *v = next("--margin-top"); if (!v) return false;
+            args.margin_top = atoi(v);
+        } else if (strcmp(a, "--margin-bottom") == 0) {
+            const char *v = next("--margin-bottom"); if (!v) return false;
+            args.margin_bottom = atoi(v);
         } else if (strcmp(a, "--line-spacing") == 0) {
             const char *v = next("--line-spacing"); if (!v) return false;
             args.line_spacing = atoi(v);
@@ -251,9 +253,6 @@ static bool parse_args(int argc, char **argv, Args &args)
     return true;
 }
 
-// ------------------------------------------------------------
-// main
-// ------------------------------------------------------------
 int main(int argc, char **argv)
 {
     Args args;
@@ -262,7 +261,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    // If no action requested, launch interactive TUI and exit
     bool any_action = args.do_info || args.do_status || !args.print_file.empty() ||
                       !args.text_inline.empty() || !args.text_file.empty() ||
                       args.feed_dots > 0 || args.do_form_feed ||
@@ -274,7 +272,6 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    // Validate device selection for CLI mode
     if (!args.use_fischero && !args.use_cat) {
         fprintf(stderr, "Error: Specify --fischero or --cat\n");
         return 1;
@@ -284,15 +281,12 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    // Default device name for Fischero; Cat uses service-UUID auto-discovery
     if (args.device_name.empty() && args.use_fischero)
         args.device_name = "FICHERO";
 
-    // Per-device default font size
     if (args.font_size < 0)
         args.font_size = args.use_fischero ? 2 : 3;
 
-    // Create printer
     std::unique_ptr<Printer> printer;
     if (args.use_fischero) {
         auto mode = FischeroPrinter::Transport::Auto;
@@ -314,11 +308,9 @@ int main(int argc, char **argv)
     int exit_code = 0;
 
     try {
-        // ---- Info ----
         if (args.do_info)
             printer->print_info();
 
-        // ---- Status ----
         if (args.do_status) {
             if (args.use_fischero) {
                 auto *fp = static_cast<FischeroPrinter *>(printer.get());
@@ -329,7 +321,6 @@ int main(int argc, char **argv)
             }
         }
 
-        // ---- Fischero config ----
         if (args.use_fischero) {
             auto *fp = static_cast<FischeroPrinter *>(printer.get());
             if (args.paper_type >= 0)  fp->set_paper_type(args.paper_type);
@@ -342,10 +333,9 @@ int main(int argc, char **argv)
             printer->set_density(args.density);
             fp->set_label_length_mm(args.label_size_mm);
             LOG_INFO("Label: %d x 14 mm  [%s]", args.label_size_mm,
-                     args.portrait ? "portrait" : "landscape");
+                     args.portrait ? "portrait (across 14mm)" : "landscape (along label)");
         }
 
-        // ---- Cat roll config ----
         if (args.use_cat) {
             auto *cp = static_cast<CatPrinter *>(printer.get());
             if (args.energy >= 0)
@@ -354,23 +344,45 @@ int main(int argc, char **argv)
                 cp->set_density(args.density);
         }
 
-        // ---- Print image ----
+        bool landscape = args.use_fischero && !args.portrait;
+
+        // ------- Image printing -------
         if (!args.print_file.empty()) {
-            int pw = printer->print_width();
-            bool do_rotate = args.use_fischero && !args.portrait;
-            int render_w = pw;
-            LOG_INFO("Loading image '%s' (%dpx%s)...", args.print_file.c_str(),
-                     render_w, args.use_fischero
-                                ? (do_rotate ? " landscape" : " portrait")
-                                : "");
-            BinImage img = load_image(args.print_file, render_w, args.dither);
-            if (do_rotate) img = rotate_90cw(img);
-            LOG_INFO("Image: %dx%d px, dither=%s",
-                     img.width, img.height, dither_to_string(args.dither));
-            printer->print_image(img, args.copies);
+            int label_dots = (int)((double)args.label_size_mm * 203.0 / 25.4 + 0.5);
+            BinImage img;
+
+            if (landscape) {
+                int usable_w = 96 - args.margin_top - args.margin_bottom;
+                int usable_h = label_dots - args.margin_left - args.margin_right;
+                img = load_and_fit(args.print_file, usable_w, usable_h, args.dither, true);
+                img = pad_image(img, args.margin_top, args.margin_bottom,
+                                      args.margin_left, args.margin_right);
+            } else if (args.use_fischero) {
+                int usable_w = 96 - args.margin_left - args.margin_right;
+                int usable_h = label_dots - args.margin_top - args.margin_bottom;
+                img = load_and_fit(args.print_file, usable_w, usable_h, args.dither, false);
+                img = pad_image(img, args.margin_left, args.margin_right,
+                                      args.margin_top, args.margin_bottom);
+            } else {
+                // Cat roll: only top/bottom margins, image width fixed at 384
+                int pw = printer->print_width();
+                img = load_image(args.print_file, pw, args.dither);
+                img = pad_image(img, 0, 0, args.margin_top, args.margin_bottom);
+            }
+
+            if (args.use_fischero) {
+                auto* fp = static_cast<FischeroPrinter*>(printer.get());
+                int saved_label = fp->label_length_mm();
+                fp->set_label_length_mm(0);
+                printer->print_image(img, args.copies);
+                fp->set_label_length_mm(saved_label);
+            } else {
+                printer->print_image(img, args.copies);
+            }
+            LOG_INFO("Image printed, dither=%s", dither_to_string(args.dither));
         }
 
-        // ---- Print text ----
+        // ------- Text printing -------
         if (!args.text_inline.empty() || !args.text_file.empty()) {
             std::string text;
             if (!args.text_file.empty()) {
@@ -380,39 +392,50 @@ int main(int argc, char **argv)
                 text = args.text_inline;
             }
 
-            bool do_rotate = args.use_fischero && !args.portrait;
             int pw = printer->print_width();
-            int render_w = pw;
-
-            int gw = font_glyph_w(args.font_size, render_w);
-            int gh = font_glyph_h(args.font_size, render_w);
-            int chars_per_line = (render_w - 2 * args.margin) / gw;
-            LOG_INFO("Rendering text: font-size=%d (%dx%dpx), %d chars/line [%s]",
-                     args.font_size, gw, gh, chars_per_line,
-                     args.use_fischero
-                       ? (do_rotate ? "landscape" : "portrait")
-                       : "normal");
-
             TextOptions topts;
-            topts.font_size    = args.font_size;
-            topts.margin_x     = args.margin;
-            topts.margin_y     = args.margin;
-            topts.line_spacing = args.line_spacing;
-            topts.word_wrap    = args.word_wrap;
+            topts.font_size     = args.font_size;
+            topts.line_spacing  = args.line_spacing;
+            topts.word_wrap     = args.word_wrap;
 
-            BinImage img = render_text(text, render_w, topts);
-            if (do_rotate) img = rotate_90cw(img);
-            LOG_INFO("Print image: %dx%d px", img.width, img.height);
-            printer->print_image(img, args.copies);
+            BinImage img;
+            if (landscape) {
+                int label_dots = (int)((double)args.label_size_mm * 203.0 / 25.4 + 0.5);
+                topts.margin_left = 0; topts.margin_right = 0;
+                topts.margin_top  = 0; topts.margin_bottom = 0;
+                img = render_text(text, label_dots, topts);
+                img = rotate_90cw(img);
+                img = pad_image(img, args.margin_top, args.margin_bottom,
+                                      args.margin_left, args.margin_right);
+            } else if (args.use_fischero) {
+                topts.margin_left   = args.margin_left;
+                topts.margin_right  = args.margin_right;
+                topts.margin_top    = 0;
+                topts.margin_bottom = 0;
+                img = render_text(text, pw, topts);
+                img = pad_image(img, 0, 0, args.margin_top, args.margin_bottom);
+            } else {
+                // Cat printer text rendering uses the margin fields in TextOptions,
+                // which already respect left/right margins internally.
+                img = render_text(text, pw, topts);
+            }
+
+            if (args.use_fischero) {
+                auto* fp = static_cast<FischeroPrinter*>(printer.get());
+                int saved_label = fp->label_length_mm();
+                fp->set_label_length_mm(0);
+                printer->print_image(img, args.copies);
+                fp->set_label_length_mm(saved_label);
+            } else {
+                printer->print_image(img, args.copies);
+            }
         }
 
-        // ---- Feed ----
         if (args.feed_dots > 0) {
             LOG_INFO("Feeding %d dots...", args.feed_dots);
             printer->feed(args.feed_dots);
         }
 
-        // ---- Form feed ----
         if (args.do_form_feed) {
             if (args.use_fischero)
                 static_cast<FischeroPrinter *>(printer.get())->form_feed();

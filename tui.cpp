@@ -149,6 +149,15 @@ static std::string get_text_or_path(const std::string& action) {
     return input;
 }
 
+static std::string read_line_prompt(const std::string& prompt) {
+    disable_raw_mode();
+    std::cout << prompt << std::flush;
+    std::string line;
+    std::getline(std::cin, line);
+    enable_raw_mode();
+    return line;
+}
+
 // ---------- TUI application state ----------
 struct TuiApp {
     std::unique_ptr<Printer> printer;
@@ -262,6 +271,19 @@ struct TuiApp {
         }
     }
 
+    void send_with_margins(BinImage img, int copies) {
+        auto* fisch = dynamic_cast<FischeroPrinter*>(printer.get());
+        int saved_label = 0;
+        if (fisch) {
+            saved_label = fisch->label_length_mm();
+            fisch->set_label_length_mm(0);
+        }
+        printer->print_image(img, copies);
+        if (fisch) {
+            fisch->set_label_length_mm(saved_label);
+        }
+    }
+
     void run_print_text() {
         std::string input = get_text_or_path("Print Text");
         if (input.empty()) return;
@@ -274,19 +296,41 @@ struct TuiApp {
                 text = input;
             }
             int pw = printer->print_width();
+            bool landscape = (dev_type == DeviceType::Fischero && !config.portrait);
+
             TextOptions opts;
-            opts.font_size    = config.font_size;
-            opts.margin_x     = config.margin_x;
-            opts.margin_y     = config.margin_y;
-            opts.line_spacing = 1;
-            opts.word_wrap    = true;
+            opts.font_size     = config.font_size;
+            opts.line_spacing  = 1;
+            opts.word_wrap     = true;
             if (config.alignment == "center")       opts.alignment = TextAlign::Center;
             else if (config.alignment == "right")   opts.alignment = TextAlign::Right;
             else                                    opts.alignment = TextAlign::Left;
-            BinImage img = render_text(text, pw, opts);
-            if (dev_type == DeviceType::Fischero && !config.portrait)
+
+            BinImage img;
+            if (landscape) {
+                int label_dots = (int)((double)config.label_size_mm * 203.0 / 25.4 + 0.5);
+                opts.margin_left = 0; opts.margin_right = 0;
+                opts.margin_top  = 0; opts.margin_bottom = 0;
+                img = render_text(text, label_dots, opts);
                 img = rotate_90cw(img);
-            printer->print_image(img, 1);
+                img = pad_image(img, config.margin_top, config.margin_bottom,
+                                      config.margin_left, config.margin_right);
+            } else if (dev_type == DeviceType::Fischero) {
+                opts.margin_left   = config.margin_left;
+                opts.margin_right  = config.margin_right;
+                opts.margin_top    = 0;
+                opts.margin_bottom = 0;
+                img = render_text(text, pw, opts);
+                img = pad_image(img, 0, 0, config.margin_top, config.margin_bottom);
+            } else {
+                // Cat printer text rendering – margins handled internally
+                img = render_text(text, pw, opts);
+            }
+
+            if (dev_type == DeviceType::Fischero)
+                send_with_margins(img, 1);
+            else
+                printer->print_image(img, 1);
             flash_message("Text printed.");
         } catch (const std::exception& e) {
             flash_message(std::string("Error: ") + e.what());
@@ -298,10 +342,33 @@ struct TuiApp {
         if (path.empty()) return;
         try {
             Dither d = dither_from_string(config.dither);
-            BinImage img = load_image(path, printer->print_width(), d);
-            if (dev_type == DeviceType::Fischero && !config.portrait)
-                img = rotate_90cw(img);
-            printer->print_image(img, 1);
+            bool landscape = (dev_type == DeviceType::Fischero && !config.portrait);
+            int label_dots = (int)((double)config.label_size_mm * 203.0 / 25.4 + 0.5);
+
+            BinImage img;
+            if (landscape) {
+                int usable_w = 96 - config.margin_top - config.margin_bottom;
+                int usable_h = label_dots - config.margin_left - config.margin_right;
+                img = load_and_fit(path, usable_w, usable_h, d, true);
+                img = pad_image(img, config.margin_top, config.margin_bottom,
+                                      config.margin_left, config.margin_right);
+            } else if (dev_type == DeviceType::Fischero) {
+                int usable_w = 96 - config.margin_left - config.margin_right;
+                int usable_h = label_dots - config.margin_top - config.margin_bottom;
+                img = load_and_fit(path, usable_w, usable_h, d, false);
+                img = pad_image(img, config.margin_left, config.margin_right,
+                                      config.margin_top, config.margin_bottom);
+            } else {
+                // Cat roll: only top/bottom margins, width fixed at 384
+                int pw = printer->print_width();
+                img = load_image(path, pw, d);
+                img = pad_image(img, 0, 0, config.margin_top, config.margin_bottom);
+            }
+
+            if (dev_type == DeviceType::Fischero)
+                send_with_margins(img, 1);
+            else
+                printer->print_image(img, 1);
             flash_message("Image printed.");
         } catch (const std::exception& e) {
             flash_message(std::string("Error: ") + e.what());
@@ -348,10 +415,14 @@ struct TuiApp {
             items.push_back("Density: " + std::to_string(config.density));
             items.push_back("Font size: " + std::to_string(config.font_size));
             items.push_back("Alignment: " + config.alignment);
-            items.push_back("Margin X: " + std::to_string(config.margin_x));
-            items.push_back("Margin Y: " + std::to_string(config.margin_y));
+            items.push_back("Margins (L:" + std::to_string(config.margin_left) +
+                            " R:" + std::to_string(config.margin_right) +
+                            " T:" + std::to_string(config.margin_top) +
+                            " B:" + std::to_string(config.margin_bottom) + ")");
             if (dev_type == DeviceType::Fischero) {
-                items.push_back("Orientation: " + std::string(config.portrait ? "Portrait" : "Landscape"));
+                std::string orient = config.portrait
+                    ? "Portrait (across 14mm)" : "Landscape (along label)";
+                items.push_back("Orientation: " + orient);
                 items.push_back("Label length: " + std::to_string(config.label_size_mm) + " mm");
             }
             items.push_back("Back");
@@ -378,17 +449,10 @@ struct TuiApp {
                 else if (al == 1) config.alignment = "center";
                 else if (al == 2) config.alignment = "right";
             } else if (sel == 4) {
-                // Margin X: offer common small values
-                std::vector<std::string> margins = {"0","1","2","3","4","5","8","10","12","16"};
-                int mx = menu_loop("Margin X (pixels)", margins);
-                if (mx >= 0 && mx < (int)margins.size()) config.margin_x = atoi(margins[mx].c_str());
-            } else if (sel == 5) {
-                std::vector<std::string> margins = {"0","1","2","3","4","5","8","10","12","16"};
-                int my = menu_loop("Margin Y (pixels)", margins);
-                if (my >= 0 && my < (int)margins.size()) config.margin_y = atoi(margins[my].c_str());
-            } else if (sel == 6 && dev_type == DeviceType::Fischero) {
+                run_margin_settings();
+            } else if (sel == 5 && dev_type == DeviceType::Fischero) {
                 config.portrait = !config.portrait;
-            } else if (sel == 7 && dev_type == DeviceType::Fischero) {
+            } else if (sel == 6 && dev_type == DeviceType::Fischero) {
                 std::vector<std::string> lens = {"30 mm", "50 mm"};
                 int l = menu_loop("Label length", lens);
                 if (l == 0) config.label_size_mm = 30;
@@ -399,6 +463,52 @@ struct TuiApp {
             save_config(config);
         }
         if (printer) printer->set_density(config.density);
+    }
+
+    void run_margin_settings() {
+        while (true) {
+            std::vector<std::string> items = {
+                "Left:   " + std::to_string(config.margin_left),
+                "Right:  " + std::to_string(config.margin_right),
+                "Top:    " + std::to_string(config.margin_top),
+                "Bottom: " + std::to_string(config.margin_bottom),
+                "Presets",
+                "Back"
+            };
+            int sel = menu_loop("Margins", items);
+            if (sel < 0 || sel == (int)items.size()-1) break;
+
+            if (sel >= 0 && sel <= 3) {
+                std::string input = read_line_prompt("New value (0-16): ");
+                int val = atoi(input.c_str());
+                if (val < 0) val = 0;
+                if (val > 16) val = 16;
+                if (sel == 0) config.margin_left = val;
+                else if (sel == 1) config.margin_right = val;
+                else if (sel == 2) config.margin_top = val;
+                else if (sel == 3) config.margin_bottom = val;
+                save_config(config);
+            } else if (sel == 4) {
+                std::vector<std::string> presets = {
+                    "None (0)",
+                    "Narrow (1)",
+                    "Normal (2)",
+                    "Wide (4)",
+                    "Very Wide (8)"
+                };
+                int p = menu_loop("Margin presets", presets);
+                int val = 0;
+                if (p == 0) val = 0;
+                else if (p == 1) val = 1;
+                else if (p == 2) val = 2;
+                else if (p == 3) val = 4;
+                else if (p == 4) val = 8;
+                else continue;
+                config.margin_left = config.margin_right =
+                config.margin_top  = config.margin_bottom = val;
+                save_config(config);
+            }
+        }
     }
 
     void run_status() {

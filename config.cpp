@@ -56,15 +56,18 @@ Config load_config() {
     val = json_get(raw, "label_size_mm"); if (!val.empty()) cfg.label_size_mm = atoi(val.c_str());
     val = json_get(raw, "portrait");   if (val == "true") cfg.portrait = true;
     val = json_get(raw, "alignment");  if (!val.empty()) cfg.alignment = val;
-    val = json_get(raw, "margin_x");   if (!val.empty()) cfg.margin_x = atoi(val.c_str());
-    val = json_get(raw, "margin_y");   if (!val.empty()) cfg.margin_y = atoi(val.c_str());
+    val = json_get(raw, "margin_left");   if (!val.empty()) cfg.margin_left   = atoi(val.c_str());
+    val = json_get(raw, "margin_right");  if (!val.empty()) cfg.margin_right  = atoi(val.c_str());
+    val = json_get(raw, "margin_top");    if (!val.empty()) cfg.margin_top    = atoi(val.c_str());
+    val = json_get(raw, "margin_bottom"); if (!val.empty()) cfg.margin_bottom = atoi(val.c_str());
     val = json_get(raw, "last_mac");   if (!val.empty()) cfg.last_mac = val;
 
-    // clamp
     if (cfg.font_size < 1) cfg.font_size = 1;
     if (cfg.font_size > 5) cfg.font_size = 5;
-    if (cfg.margin_x < 0) cfg.margin_x = 0;
-    if (cfg.margin_y < 0) cfg.margin_y = 0;
+    if (cfg.margin_left   < 0) cfg.margin_left   = 0;
+    if (cfg.margin_right  < 0) cfg.margin_right  = 0;
+    if (cfg.margin_top    < 0) cfg.margin_top    = 0;
+    if (cfg.margin_bottom < 0) cfg.margin_bottom = 0;
     if (cfg.alignment != "left" && cfg.alignment != "center" && cfg.alignment != "right")
         cfg.alignment = "left";
     return cfg;
@@ -79,8 +82,10 @@ void save_config(const Config& cfg) {
     ss << "    \"label_size_mm\": " << cfg.label_size_mm << ",\n";
     ss << "    \"portrait\": " << (cfg.portrait ? "true" : "false") << ",\n";
     ss << "    \"alignment\": \"" << cfg.alignment << "\",\n";
-    ss << "    \"margin_x\": " << cfg.margin_x << ",\n";
-    ss << "    \"margin_y\": " << cfg.margin_y << ",\n";
+    ss << "    \"margin_left\": " << cfg.margin_left << ",\n";
+    ss << "    \"margin_right\": " << cfg.margin_right << ",\n";
+    ss << "    \"margin_top\": " << cfg.margin_top << ",\n";
+    ss << "    \"margin_bottom\": " << cfg.margin_bottom << ",\n";
     ss << "    \"last_mac\": \"" << cfg.last_mac << "\"\n";
     ss << "}\n";
     write_file(config_path(), ss.str());

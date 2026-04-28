@@ -41,8 +41,6 @@ std::vector<uint8_t> BinImage::packed() const
 // ------------------------------------------------------------
 BinImage rotate_90cw(const BinImage &src)
 {
-    // Rotating 90° CW: new[x][src.height-1-y] = src[y][x]
-    // Output: width=src.height, height=src.width (padded to multiple of 8)
     int out_w = (src.height + 7) & ~7;
     int out_h = src.width;
     BinImage out;
@@ -62,7 +60,6 @@ BinImage rotate_90cw(const BinImage &src)
 
 BinImage rotate_90ccw(const BinImage &src)
 {
-    // Rotating 90° CCW: dst(src.width-1-x, y) = src(y, x)
     int out_w = (src.height + 7) & ~7;
     int out_h = src.width;
     BinImage out;
@@ -83,8 +80,6 @@ BinImage rotate_90ccw(const BinImage &src)
 // ------------------------------------------------------------
 // Centering / padding helpers
 // ------------------------------------------------------------
-// Pad/crop horizontally so output is exactly target_width px wide
-// (rounded up to a multiple of 8). Original pixels are centred.
 BinImage center_on_width(const BinImage &src, int target_width)
 {
     int tw = (target_width + 7) & ~7;
@@ -99,7 +94,6 @@ BinImage center_on_width(const BinImage &src, int target_width)
             for (int x = 0; x < src.width; x++)
                 out.rows[y][off + x] = src.rows[y][x];
     } else {
-        // Source wider than target → centre-crop
         int off = (src.width - tw) / 2;
         for (int y = 0; y < src.height; y++)
             for (int x = 0; x < tw; x++)
@@ -108,8 +102,6 @@ BinImage center_on_width(const BinImage &src, int target_width)
     return out;
 }
 
-// Pad/crop vertically so output has exactly target_height rows.
-// Original rows are centred.
 BinImage center_on_height(const BinImage &src, int target_height)
 {
     BinImage out;
@@ -216,7 +208,6 @@ static void apply_mean_threshold(GrayBuf &buf)
         v = (v > mean) ? 255.f : 0.f;
 }
 
-// Simple halftone: 4x4 ordered dither matrix
 static void apply_halftone(GrayBuf &buf)
 {
     static const int bayer4[4][4] = {
@@ -314,4 +305,99 @@ BinImage load_image(const std::string &filename, int print_width, Dither dither)
 
     LOG_INFO("Image ready: %dx%d px", pw, new_h);
     return img;
+}
+
+// ------------------------------------------------------------
+// pad_image – add blank margins to an existing BinImage
+// ------------------------------------------------------------
+BinImage pad_image(const BinImage &src, int left, int right, int top, int bottom) {
+    left   = std::max(0, left);
+    right  = std::max(0, right);
+    top    = std::max(0, top);
+    bottom = std::max(0, bottom);
+
+    int new_w = src.width + left + right;
+    int new_h = src.height + top + bottom;
+
+    BinImage out;
+    out.width  = new_w;
+    out.height = new_h;
+    out.rows.assign(new_h, std::vector<bool>(new_w, false));
+
+    for (int y = 0; y < src.height; y++)
+        for (int x = 0; x < src.width; x++)
+            out.rows[top + y][left + x] = src.rows[y][x];
+
+    return out;
+}
+// ------------------------------------------------------------
+// load_and_fit – load, resize to fit, optionally rotate, centre
+// ------------------------------------------------------------
+BinImage load_and_fit(const std::string &filename,
+                      int target_w, int target_h,
+                      Dither dither, bool rotate90)
+{
+    int orig_w, orig_h, channels;
+    unsigned char *raw = stbi_load(filename.c_str(), &orig_w, &orig_h, &channels, 1);
+    if (!raw)
+        throw std::runtime_error(std::string("Failed to load image: ") + stbi_failure_reason());
+
+    // Determine the box the *original* image must fit into.
+    // After rotation, width and height are swapped.
+    int box_w = rotate90 ? target_h : target_w;
+    int box_h = rotate90 ? target_w : target_h;
+
+    // Scale factor to preserve aspect ratio.
+    double scale_w = (double)box_w / orig_w;
+    double scale_h = (double)box_h / orig_h;
+    double scale   = std::min(scale_w, scale_h);
+    int new_w = (int)(orig_w * scale + 0.5);
+    int new_h = (int)(orig_h * scale + 0.5);
+    if (new_w < 1) new_w = 1;
+    if (new_h < 1) new_h = 1;
+
+    // Resize with stb_image_resize
+    std::vector<unsigned char> resized(new_w * new_h);
+    unsigned char *result = stbir_resize_uint8_linear(raw, orig_w, orig_h, 0,
+                                                       resized.data(), new_w, new_h, 0,
+                                                       STBIR_1CHANNEL);
+    stbi_image_free(raw);
+    if (!result)
+        throw std::runtime_error("Failed to resize image");
+
+    // Convert to float buffer and apply dither
+    GrayBuf buf;
+    buf.w = new_w;
+    buf.h = new_h;
+    buf.px.resize(new_w * new_h);
+    for (int i = 0; i < new_w * new_h; i++)
+        buf.px[i] = (float)resized[i];
+
+    switch (dither) {
+        case Dither::FloydSteinberg: apply_floyd_steinberg(buf); break;
+        case Dither::Atkinson:       apply_atkinson(buf);       break;
+        case Dither::MeanThreshold:  apply_mean_threshold(buf); break;
+        case Dither::Halftone:       apply_halftone(buf);       break;
+        case Dither::None:
+            for (float &v : buf.px) v = (v > 127.f) ? 255.f : 0.f;
+            break;
+    }
+
+    // Build BinImage from dithered data
+    BinImage img;
+    img.width  = new_w;
+    img.height = new_h;
+    img.rows.resize(new_h, std::vector<bool>(new_w, false));
+    for (int y = 0; y < new_h; y++)
+        for (int x = 0; x < new_w; x++)
+            img.rows[y][x] = (buf.at(y, x) < 128.f);
+
+    // Rotate if requested
+    if (rotate90)
+        img = rotate_90cw(img);
+
+    // Now centre the (possibly smaller) image inside the target rectangle
+    BinImage out = center_on_width(img, target_w);
+    out = center_on_height(out, target_h);
+    return out;
 }
